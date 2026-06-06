@@ -1,0 +1,44 @@
+{
+  "name": "RAFACAR RASTREADORES",
+  "short_name": "RAFACAR",
+  "description": "Painel RAFACAR para rastreamento veicular via Traccar.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "background_color": "#071013",
+  "theme_color": "#1f766d",
+  "orientation": "portrait-primary",
+  "categories": ["navigation", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "brand/rafacar-app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Mapa da frota",
+      "short_name": "Mapa",
+      "description": "Abrir o mapa da frota RAFACAR.",
+      "url": "./?tab=dashboard",
+      "icons": [{ "src": "brand/rafacar-app-icon-512.png", "sizes": "512x512", "type": "image/png" }]
+    },
+    {
+      "name": "Alertas",
+      "short_name": "Alertas",
+      "description": "Abrir alertas do rastreamento.",
+      "url": "./?tab=eventos",
+      "icons": [{ "src": "brand/rafacar-app-icon-512.png", "sizes": "512x512", "type": "image/png" }]
+    },
+    {
+      "name": "Monitoramento",
+      "short_name": "Camera",
+      "description": "Abrir cameras e evidencias.",
+      "url": "./?tab=monitoramento",
+      "icons": [{ "src": "brand/rafacar-app-icon-512.png", "sizes": "512x512", "type": "image/png" }]
+    }
+  ]
+}
