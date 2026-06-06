@@ -1,6 +1,6 @@
 {
   "name": "traccar-dev-final",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "private": true,
   "type": "module",
   "description": "TRACCAR DEV revisado: frontend React com proxy seguro Node/Express para Traccar.",
