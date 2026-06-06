@@ -75,7 +75,7 @@ No painel, selecione o veiculo, informe `streamPath` e, para imagens em tempo re
 
 ## GitHub Pages
 
-O workflow `.github/workflows/pages.yml` publica o frontend estatico. Como GitHub Pages nao executa o proxy Node, configure a variavel do repositorio `VITE_API_BASE_URL` apontando para o backend em producao.
+O workflow `.github/workflows/pages.yml` publica o frontend estatico. Como GitHub Pages nao executa o proxy Node, configure a variavel do repositorio `VITE_API_BASE_URL` apontando para o backend em producao. Tambem e possivel abrir o Pages uma vez com `?api=https://SEU-BACKEND`; o painel salva esse backend no navegador.
 
 No backend, permita a origem do Pages:
 

@@ -51,7 +51,12 @@ const API_TIMEOUT_MS = 18000;
 const DEFAULT_CENTER = [-20.812249, -49.375975];
 const DEFAULT_POLLING_MS = 30000;
 const APP_BASE_URL = import.meta.env.BASE_URL || '/';
-const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const API_BASE_URL = (() => {
+  if (typeof window === 'undefined') return String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+  const queryApi = new URLSearchParams(window.location.search).get('api');
+  if (queryApi) localStorage.setItem('rafacar-api-base-url', queryApi);
+  return String(queryApi || localStorage.getItem('rafacar-api-base-url') || import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+})();
 
 function assetUrl(path) {
   const base = APP_BASE_URL.endsWith('/') ? APP_BASE_URL : `${APP_BASE_URL}/`;
