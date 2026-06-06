@@ -3,12 +3,12 @@ import { createRoot } from 'react-dom/client';
 import {
   Activity,
   AlertTriangle,
-  Battery,
   BatteryCharging,
   Bot,
   Camera,
   Car,
-  Circle,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Command,
   Cpu,
@@ -25,6 +25,7 @@ import {
   LogOut,
   MapPinned,
   Monitor,
+  Moon,
   Navigation,
   Power,
   RefreshCw,
@@ -33,14 +34,13 @@ import {
   Send,
   Settings,
   ShieldCheck,
+  Sun,
   Trash2,
   Thermometer,
   TimerReset,
   Unlock,
   UserRound,
   Video,
-  Wifi,
-  WifiOff,
   Zap
 } from 'lucide-react';
 import { MapContainer, Marker, Popup, Polyline, TileLayer, useMap } from 'react-leaflet';
@@ -48,9 +48,14 @@ import L from 'leaflet';
 import './styles.css';
 
 const API_TIMEOUT_MS = 18000;
-const DEFAULT_CENTER = [-20.812249, -49.375975];
+const DEFAULT_CENTER = [-22.35, -48.78];
+const DEFAULT_MAP_ZOOM = 7;
+const FLEET_MAX_ZOOM = 13;
+const SELECTED_VEHICLE_ZOOM = 18;
 const DEFAULT_POLLING_MS = 30000;
 const APP_BASE_URL = import.meta.env.BASE_URL || '/';
+const MONITORING_CAMERAS_CACHE_KEY = 'rafacar-monitoring-cameras';
+const MONITORING_EVIDENCE_CACHE_KEY = 'rafacar-monitoring-evidence';
 const API_BASE_URL = (() => {
   if (typeof window === 'undefined') return String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
   const queryApi = new URLSearchParams(window.location.search).get('api');
@@ -67,6 +72,42 @@ function buildApiUrl(path) {
   const raw = String(path || '');
   if (/^https?:\/\//i.test(raw)) return raw;
   return `${API_BASE_URL}${raw}`;
+}
+
+function loadCachedMonitoringCameras() {
+  if (typeof window === 'undefined') return [];
+  try {
+    return normalizeArray(JSON.parse(localStorage.getItem(MONITORING_CAMERAS_CACHE_KEY) || '[]'));
+  } catch {
+    return [];
+  }
+}
+
+function cacheMonitoringCameras(cameras = []) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(MONITORING_CAMERAS_CACHE_KEY, JSON.stringify(normalizeArray(cameras)));
+  } catch {
+    /* ignore local cache failures */
+  }
+}
+
+function loadCachedEvidenceRecords() {
+  if (typeof window === 'undefined') return [];
+  try {
+    return normalizeArray(JSON.parse(localStorage.getItem(MONITORING_EVIDENCE_CACHE_KEY) || '[]'));
+  } catch {
+    return [];
+  }
+}
+
+function cacheEvidenceRecords(records = []) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(MONITORING_EVIDENCE_CACHE_KEY, JSON.stringify(normalizeArray(records).slice(0, 500)));
+  } catch {
+    /* ignore local cache failures */
+  }
 }
 
 const CARS_V2_MAP_ICON_PATH = assetUrl('/vehicle-icons/carsv2-map');
@@ -144,7 +185,6 @@ const tabs = [
   ['comandos', 'Comandos', Command],
   ['atributos', 'Atributos', Cpu],
   ['integracoes', 'Integracoes', Zap],
-  ['usuario', 'Usuario', UserRound],
   ['config', 'Config', Settings]
 ];
 
@@ -916,7 +956,7 @@ function CameraLiveView({ camera, mediaMtxUrl, cacheKey = 0, compact = false }) 
     return (
       <div className={`camera-live-empty ${compact ? 'compact' : ''}`}>
         <Camera size={28} />
-        <span>Camera sem caminho MediaMTX configurado.</span>
+        <span>Camera sem imagem configurada.</span>
       </div>
     );
   }
@@ -967,7 +1007,7 @@ function CameraDock({ item, camera, mediaMtxUrl, onClose }) {
         <div>
           <small>Camera integrada</small>
           <b>{camera?.label || getVehicleName(device)}</b>
-          <span>{getVehicleName(device)} - {camera?.streamPath || camera?.snapshotPath}</span>
+          <span>{getVehicleName(device)}</span>
         </div>
         <button className="icon-only-btn" type="button" title="Fechar camera" onClick={onClose}>x</button>
       </div>
@@ -1053,10 +1093,6 @@ function MapAutoFit({ positions, enabled = true, singleZoom = 18, maxZoom = 18, 
       return;
     }
     map.fitBounds(points, { padding, maxZoom });
-    const timer = setTimeout(() => {
-      if (map.getZoom() < 15) map.setZoom(15, { animate: true });
-    }, 360);
-    return () => clearTimeout(timer);
   }, [enabled, map, positions, singleZoom, maxZoom, padding, requestKey]);
   return null;
 }
@@ -1304,10 +1340,10 @@ function Dashboard({ items, stats, layerKey, setLayerKey, fitMap, setFitMap, sea
           </div>
 
           <div className="map-wrap full-background-map">
-            <MapContainer center={getLatLng(validPositions[0]) || DEFAULT_CENTER} zoom={12} scrollWheelZoom>
+            <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_MAP_ZOOM} scrollWheelZoom>
               <TileLayer attribution={layer.attribution} url={layer.url} maxZoom={20} />
-              <MapAutoFit positions={validPositions} enabled={fitMap} singleZoom={17} maxZoom={17} padding={[72, 72]} requestKey={fitRequestId} />
-              <MapFocusTarget item={focusedItem} zoom={18} />
+              <MapAutoFit positions={validPositions} enabled={fitMap && validPositions.length > 1} singleZoom={FLEET_MAX_ZOOM} maxZoom={FLEET_MAX_ZOOM} padding={[72, 72]} requestKey={fitRequestId} />
+              <MapFocusTarget item={focusedItem} zoom={SELECTED_VEHICLE_ZOOM} />
               {items.map((item) => <VehicleMarker key={item.device.id} item={item} onFocus={focusVehicle} focused={Number(item.device.id) === Number(focusedVehicleId)} />)}
             </MapContainer>
           </div>
@@ -1454,6 +1490,8 @@ function EventsPage({ events, devicesById }) {
         {sorted.map((event, index) => {
           const Icon = alertIcon(event);
           const device = devicesById.get(eventDeviceId(event));
+          const attrs = event.attributes && typeof event.attributes === 'object' ? event.attributes : {};
+          const imageAlertUrl = attrs.imageUrl || attrs.image || attrs.photo || attrs.snapshotUrl || attrs.snapshot || '';
           return (
             <div className="row" key={`${event.id || eventTime(event) || index}-${index}`}>
               <div className="row-head">
@@ -1465,6 +1503,11 @@ function EventsPage({ events, devicesById }) {
               </div>
               <small>{device ? getVehicleName(device) : `Dispositivo ${eventDeviceId(event) || '-'}`} · {formatDate(eventTime(event))}</small>
               {event.attributes?.result && <small>Resultado: {String(event.attributes.result)}</small>}
+              {imageAlertUrl && (
+                <div className="alert-event-image">
+                  <img src={buildApiUrl(String(imageAlertUrl))} alt="Imagem do alerta" loading="lazy" />
+                </div>
+              )}
             </div>
           );
         })}
@@ -1519,7 +1562,7 @@ function CommandsPage({ items }) {
   return (
     <section className="panel">
       <h3>Comandos seguros</h3>
-      <div className="warn-box">Comandos passam pelo proxy Node. Nenhuma credencial do Traccar fica exposta no navegador.</div>
+      <div className="warn-box">Envio validado pela sessao atual. Use apenas comandos autorizados para o equipamento selecionado.</div>
       {message && <div className={message.startsWith('Falha') || message.startsWith('Não') ? 'error-box' : 'success-box'}>{message}</div>}
       <div className="form-grid">
         <label>
@@ -1586,6 +1629,7 @@ function AttributesPage({ items }) {
   const selected = items.find(({ device }) => String(device.id) === String(deviceId)) || items[0] || {};
   const deviceAttrs = getDeviceAttributes(selected.device || {});
   const positionAttrs = getPositionAttributes(selected.position || {});
+  const combinedAttrs = { ...deviceAttrs, ...positionAttrs };
   return (
     <section className="panel">
       <h3>Atributos e sensores</h3>
@@ -1600,19 +1644,13 @@ function AttributesPage({ items }) {
       <div className="mini-grid" style={{ marginBottom: 12 }}>
         <Info label="GPS valido" value={yesNo(selected.position?.valid)} />
         <Info label="Distância" value={formatDistance(positionAttrs.distance)} />
-        <Info label="Total distance" value={formatDistance(positionAttrs.totalDistance)} />
+        <Info label="Distancia total" value={formatDistance(positionAttrs.totalDistance)} />
         <Info label="Satélites" value={positionAttrs.sat || positionAttrs.satellites || '-'} />
       </div>
       <TelemetryHighlights device={selected.device || {}} position={selected.position || {}} />
-      <div className="layout">
-        <div>
-          <h3>Atributos do dispositivo</h3>
-          <KeyValueTable data={deviceAttrs} />
-        </div>
-        <div>
-          <h3>Atributos da posição</h3>
-          <KeyValueTable data={positionAttrs} />
-        </div>
+      <div className="attributes-unified-panel">
+        <h3>Dados tecnicos traduzidos</h3>
+        <KeyValueTable data={combinedAttrs} />
       </div>
     </section>
   );
@@ -1620,6 +1658,56 @@ function AttributesPage({ items }) {
 
 function isSensitiveKey(key = '') {
   return /token|password|senha|secret|cookie|authorization|credential|session/i.test(String(key));
+}
+
+const ATTRIBUTE_LABELS = {
+  alarm: 'Alarme',
+  battery: 'Bateria',
+  batteryLevel: 'Bateria',
+  blocked: 'Bloqueio',
+  charge: 'Carregando',
+  deviceTemp: 'Temperatura do equipamento',
+  distance: 'Distancia',
+  driver: 'Motorista',
+  driverName: 'Motorista',
+  driverUniqueId: 'Identificacao do motorista',
+  event: 'Evento',
+  fuel: 'Combustivel',
+  fuelLevel: 'Nivel de combustivel',
+  ignition: 'Ignicao',
+  io239: 'Ignicao',
+  io240: 'Bloqueio',
+  motion: 'Movimento',
+  odometer: 'Hodometro',
+  plate: 'Placa',
+  power: 'Alimentacao externa',
+  rfid: 'Cartao motorista',
+  sat: 'Satelites',
+  satellites: 'Satelites',
+  temperature: 'Temperatura',
+  totalDistance: 'Distancia total',
+  voltage: 'Tensao'
+};
+
+function friendlyAttributeLabel(key = '') {
+  const raw = String(key || '');
+  if (ATTRIBUTE_LABELS[raw]) return ATTRIBUTE_LABELS[raw];
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\bio\b/i, 'Entrada/Saida ')
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function friendlyAttributeValue(key = '', value) {
+  if (value === undefined || value === null || value === '') return '-';
+  if (/ignition|motion|blocked|charge|valid/i.test(key)) return yesNo(value);
+  if (/battery/i.test(key)) return formatBattery(value);
+  if (/distance|odometer/i.test(key)) return formatDistance(value);
+  if (/voltage|power/i.test(key)) return formatVoltage(value);
+  if (/temperature|temp/i.test(key)) return `${value} C`;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 function KeyValueTable({ data }) {
@@ -1633,8 +1721,8 @@ function KeyValueTable({ data }) {
         <tbody>
           {entries.map(([key, value]) => (
             <tr key={key}>
-              <th>{key}</th>
-              <td>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</td>
+              <th>{friendlyAttributeLabel(key)}</th>
+              <td>{friendlyAttributeValue(key, value)}</td>
             </tr>
           ))}
         </tbody>
@@ -1832,6 +1920,27 @@ function assistantVehicleDetails(item = null) {
   ].join('\n');
 }
 
+function assistantVehicleContext(item = {}) {
+  const { device = {}, position = {}, event = {} } = item || {};
+  const groups = collectTelemetryGroups(device, position || {});
+  return {
+    id: device.id,
+    nome: getVehicleName(device),
+    placa: getVehiclePlate(device),
+    identificador: getVehicleUniqueId(device),
+    status: statusLabel(device.status),
+    movimento: movementLabel(movementState(device, position || {})),
+    velocidade: position ? formatSpeed(position.speed) : '-',
+    ultimaPosicao: formatDate(position?.deviceTime || position?.fixTime || position?.serverTime),
+    endereco: position?.address || '',
+    alerta: eventText(event),
+    telemetria: groups.map((group) => ({
+      grupo: group.label,
+      valores: group.values.map((entry) => `${entry.label}: ${entry.value}`)
+    }))
+  };
+}
+
 function assistantCustomReport(items = [], events = []) {
   const rows = items.map(({ device, position, category }) => {
     const groups = collectTelemetryGroups(device, position || {});
@@ -1865,21 +1974,20 @@ function reportPointIcon(label = 'P', tone = 'info', course = 0) {
 }
 
 
-function ReportsPage({ items, layerKey }) {
-  const firstDeviceId = items[0]?.device?.id ? String(items[0].device.id) : '';
-  const [deviceId, setDeviceId] = useState(firstDeviceId);
+function ReportsPage({ items, layerKey, cameras = [], config }) {
+  const [deviceId, setDeviceId] = useState('');
   const [from, setFrom] = useState(() => datetimeStartOfToday());
   const [to, setTo] = useState(() => datetimeLocalValue());
   const [reportType, setReportType] = useState('route');
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-
-  useEffect(() => {
-    if (!deviceId && firstDeviceId) setDeviceId(firstDeviceId);
-  }, [deviceId, firstDeviceId]);
+  const [evidence, setEvidence] = useState([]);
 
   const selectedDevice = items.find(({ device }) => String(device.id) === String(deviceId))?.device || null;
+  const mediaMtxUrl = config?.mediaMtxUrl || config?.monitoring?.mediaMtxUrl || 'http://mtx.getautoflow.com.br';
+  const selectedCamera = selectedDevice ? cameraForDevice(cameras, selectedDevice.id) : null;
+  const reportEvidence = evidence.filter((item) => Number(item.deviceId) === Number(selectedDevice?.id)).slice(0, 4);
   const layer = MAP_LAYERS[layerKey] || MAP_LAYERS.googleRoad || MAP_LAYERS.osm;
   const validRouteRows = rows.filter(isValidPosition);
   const routePoints = validRouteRows.map(getLatLng).filter(Boolean);
@@ -1891,6 +1999,19 @@ function ReportsPage({ items, layerKey }) {
     index % directionStep === 0
   ));
   const canQuery = Boolean(deviceId && from && to);
+
+  useEffect(() => {
+    let cancelled = false;
+    request('/api/monitoring/evidence')
+      .then((payload) => {
+        if (cancelled) return;
+        const nextEvidence = normalizeArray(payload.evidence);
+        if (nextEvidence.length) cacheEvidenceRecords(nextEvidence);
+        setEvidence(nextEvidence.length ? nextEvidence : loadCachedEvidenceRecords());
+      })
+      .catch(() => { if (!cancelled) setEvidence(loadCachedEvidenceRecords()); });
+    return () => { cancelled = true; };
+  }, []);
 
   const queryReport = async ({ nextReportType = reportType, nextFrom = from, nextTo = to, nextDeviceId = deviceId } = {}) => {
     if (!nextDeviceId || !nextFrom || !nextTo) {
@@ -1930,7 +2051,7 @@ function ReportsPage({ items, layerKey }) {
       nextReportType: 'route',
       nextFrom: datetimeStartOfToday(),
       nextTo: datetimeLocalValue(),
-      nextDeviceId: deviceId || firstDeviceId
+      nextDeviceId: deviceId
     });
   };
 
@@ -1978,7 +2099,7 @@ function ReportsPage({ items, layerKey }) {
           <input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} />
         </label>
         <div className="reports-actions">
-          <button className="primary-btn" onClick={runTodayRoute} disabled={busy || !(deviceId || firstDeviceId)}>
+          <button className="primary-btn" onClick={runTodayRoute} disabled={busy || !deviceId}>
             <Route size={17} /> Trajeto de hoje
           </button>
           <button className="primary-btn" onClick={runReport} disabled={busy || !canQuery}>
@@ -1994,7 +2115,7 @@ function ReportsPage({ items, layerKey }) {
 
       <div className="reports-grid">
         <div className="report-map-wrap">
-          <MapContainer center={routePoints[0] || DEFAULT_CENTER} zoom={routePoints.length ? 17 : 12} scrollWheelZoom>
+          <MapContainer center={routePoints[0] || DEFAULT_CENTER} zoom={routePoints.length ? 17 : DEFAULT_MAP_ZOOM} scrollWheelZoom>
             <TileLayer attribution={layer.attribution} url={layer.url} maxZoom={20} />
             <MapAutoFit positions={validRouteRows} enabled={Boolean(routePoints.length)} singleZoom={18} maxZoom={18} padding={[54, 54]} />
             {routePoints.length > 1 && <Polyline positions={routePoints} weight={6} opacity={0.84} className="report-route-line" />}
@@ -2024,6 +2145,30 @@ function ReportsPage({ items, layerKey }) {
           <div className="kv"><span>Veículo</span><b>{selectedDevice ? getVehicleName(selectedDevice) : '-'}</b></div>
           <div className="kv"><span>Período</span><b>{from} até {to}</b></div>
           <div className="kv"><span>Trajeto</span><b>{routePoints.length} pontos válidos</b></div>
+          <div className="report-evidence-panel">
+            <div className="report-evidence-head">
+              <span><Camera size={15} /> Imagens da camera</span>
+              <Badge tone={reportEvidence.length || selectedCamera?.enabled ? 'good' : 'warn'}>
+                {reportEvidence.length ? `${reportEvidence.length} evidencia(s)` : selectedCamera?.enabled ? 'Ao vivo' : 'Sem camera'}
+              </Badge>
+            </div>
+            {!selectedDevice && <div className="warn-box">Selecione um veiculo para exibir imagens.</div>}
+            {selectedDevice && selectedCamera?.enabled && (
+              <CameraLiveView camera={selectedCamera} mediaMtxUrl={mediaMtxUrl} compact />
+            )}
+            {selectedDevice && reportEvidence.length > 0 && (
+              <div className="report-evidence-strip">
+                {reportEvidence.map((item) => (
+                  <a key={item.id} href={item.imageUrl || item.sourceUrl} target="_blank" rel="noreferrer" title={item.title || 'Evidencia'}>
+                    {item.imageUrl ? <img src={item.imageUrl} alt={item.title || 'Evidencia'} loading="lazy" /> : <FileText size={22} />}
+                  </a>
+                ))}
+              </div>
+            )}
+            {selectedDevice && !selectedCamera?.enabled && !reportEvidence.length && (
+              <small className="muted">Nenhuma imagem vinculada a este veiculo ainda.</small>
+            )}
+          </div>
           <div className="table-wrap report-table">
             <table>
               <thead>
@@ -2082,18 +2227,41 @@ function AssistantReportTable({ rows = [] }) {
 
 function AIAssistantPage({ items, events }) {
   const [question, setQuestion] = useState('');
+  const [selectionMode, setSelectionMode] = useState('single');
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState(() => (items[0]?.device?.id ? [String(items[0].device.id)] : []));
   const [answer, setAnswer] = useState(() => assistantFleetSummary(items, events));
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [meta, setMeta] = useState(null);
+  const scopedItems = useMemo(() => {
+    const selected = items.filter(({ device }) => selectedDeviceIds.includes(String(device.id)));
+    return selected.length ? selected : items;
+  }, [items, selectedDeviceIds]);
 
   useEffect(() => {
-    if (!question && !rows.length) setAnswer(assistantFleetSummary(items, events));
-  }, [items, events, question, rows.length]);
+    if (!selectedDeviceIds.length && items[0]?.device?.id) setSelectedDeviceIds([String(items[0].device.id)]);
+  }, [items, selectedDeviceIds.length]);
+
+  useEffect(() => {
+    if (!question && !rows.length) setAnswer(assistantFleetSummary(scopedItems, events));
+  }, [scopedItems, events, question, rows.length]);
+
+  const updateSelectionMode = (mode) => {
+    setSelectionMode(mode);
+    setSelectedDeviceIds((current) => {
+      if (mode === 'single') return current[0] ? [current[0]] : (items[0]?.device?.id ? [String(items[0].device.id)] : []);
+      return current.length ? current : items.slice(0, 3).map(({ device }) => String(device.id));
+    });
+  };
+
+  const updateSelectedDevices = (event) => {
+    const values = Array.from(event.target.selectedOptions || []).map((option) => option.value).filter(Boolean);
+    setSelectedDeviceIds(selectionMode === 'multiple' ? values : values.slice(0, 1));
+  };
 
   const runFormalReport = async (prompt) => {
-    const item = findVehicleFromText(prompt, items);
+    const item = findVehicleFromText(prompt, scopedItems);
     if (!item?.device?.id) {
       setAnswer('Nao encontrei veiculo liberado neste login para gerar o relatorio.');
       return;
@@ -2117,6 +2285,23 @@ function AIAssistantPage({ items, events }) {
     ].join('\n'));
   };
 
+  const askOperationalAi = async (text) => {
+    const payload = await request('/api/assistant/ask', {
+      method: 'POST',
+      timeoutMs: 30000,
+      body: JSON.stringify({
+        question: text,
+        vehicles: scopedItems.slice(0, 12).map(assistantVehicleContext),
+        events: normalizeArray(events).slice(0, 20).map((event) => ({
+          tipo: eventText(event),
+          dispositivo: eventDeviceId(event),
+          horario: formatDate(eventTime(event))
+        }))
+      })
+    });
+    return payload?.answer || '';
+  };
+
   const submitPrompt = async (prompt = question) => {
     const text = String(prompt || '').trim();
     setQuestion(text);
@@ -2126,16 +2311,18 @@ function AIAssistantPage({ items, events }) {
     try {
       const normalized = normalizeText(text);
       if (!text) {
-        setAnswer(assistantFleetSummary(items, events));
+        setAnswer(assistantFleetSummary(scopedItems, events));
       } else if (/relatorio|rota|trajeto|playback|parada|viagem|evento|resumo|km|quilometragem/.test(normalized) && !/personalizado|geral da frota|frota/.test(normalized)) {
         await runFormalReport(text);
       } else if (/personalizado|geral da frota|frota|todos|situacao|situacao geral|status/.test(normalized)) {
         setMeta({ type: 'custom', device: null, from: datetimeLocalValue(), to: datetimeLocalValue() });
-        setAnswer(assistantCustomReport(items, events));
+        const aiAnswer = await askOperationalAi(text).catch(() => '');
+        setAnswer(aiAnswer || assistantCustomReport(scopedItems, events));
       } else {
-        const item = findVehicleFromText(text, items);
+        const item = findVehicleFromText(text, scopedItems);
         setMeta({ type: 'vehicle', device: item?.device || null, from: datetimeLocalValue(), to: datetimeLocalValue() });
-        setAnswer(assistantVehicleDetails(item));
+        const aiAnswer = await askOperationalAi(text).catch(() => '');
+        setAnswer(aiAnswer || assistantVehicleDetails(item));
       }
     } catch (error) {
       setMessage(`Falha no assistente: ${error.message}`);
@@ -2168,13 +2355,35 @@ function AIAssistantPage({ items, events }) {
       <div className="assistant-header">
         <div>
           <h3>Assistente IA operacional</h3>
-          <p className="muted">Consulta apenas os veiculos e eventos liberados para o login atual. Relatorios formais passam pelo proxy autenticado do Traccar.</p>
+          <p className="muted">Consulta apenas os veiculos e eventos liberados para o login atual. Relatorios formais usam a sessao autenticada.</p>
         </div>
         <Badge tone="good"><ShieldCheck size={14} /> Escopo do usuario</Badge>
       </div>
 
       <div className="assistant-grid">
         <div className="assistant-composer">
+          <div className="assistant-scope-row">
+            <label>
+              <small>Escopo</small>
+              <select value={selectionMode} onChange={(event) => updateSelectionMode(event.target.value)}>
+                <option value="single">Um veiculo</option>
+                <option value="multiple">Multiplos veiculos</option>
+              </select>
+            </label>
+            <label>
+              <small>Veiculo(s)</small>
+              <select
+                multiple={selectionMode === 'multiple'}
+                size={selectionMode === 'multiple' ? Math.min(6, Math.max(3, items.length)) : 1}
+                value={selectionMode === 'multiple' ? selectedDeviceIds : (selectedDeviceIds[0] || '')}
+                onChange={updateSelectedDevices}
+              >
+                {items.map(({ device }) => (
+                  <option key={device.id} value={device.id}>{getVehicleName(device)} - {getVehiclePlate(device) || getVehicleUniqueId(device) || device.id}</option>
+                ))}
+              </select>
+            </label>
+          </div>
           <label>
             <small>Digite sua duvida ou pedido de relatorio</small>
             <textarea
@@ -2205,7 +2414,7 @@ function AIAssistantPage({ items, events }) {
         <div className="assistant-answer">
           <div className="assistant-answer-head">
             <b>Resposta</b>
-            <small>{meta?.device ? getVehicleName(meta.device) : `${items.length} veiculos visiveis`}</small>
+            <small>{meta?.device ? getVehicleName(meta.device) : `${scopedItems.length} veiculos no escopo`}</small>
           </div>
           <pre>{answer}</pre>
           <AssistantReportTable rows={rows} />
@@ -2253,8 +2462,11 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
   const loadEvidence = useCallback(async () => {
     try {
       const payload = await request('/api/monitoring/evidence');
-      setEvidence(normalizeArray(payload.evidence));
+      const nextEvidence = normalizeArray(payload.evidence);
+      if (nextEvidence.length) cacheEvidenceRecords(nextEvidence);
+      setEvidence(nextEvidence.length ? nextEvidence : loadCachedEvidenceRecords());
     } catch (error) {
+      setEvidence(loadCachedEvidenceRecords());
       setMessage(`Falha ao carregar evidencias: ${error.message}`);
     }
   }, []);
@@ -2323,7 +2535,11 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
     try {
       const body = cameraPayloadForEvidence(previewCamera, selectedItem, mediaMtxUrl, evidenceNote);
       const payload = await request('/api/monitoring/evidence/snapshot', { method: 'POST', body: JSON.stringify(body) });
-      setEvidence((current) => [payload.evidence, ...current.filter((item) => item.id !== payload.evidence?.id)]);
+      setEvidence((current) => {
+        const nextEvidence = [payload.evidence, ...current.filter((item) => item.id !== payload.evidence?.id)].filter(Boolean);
+        cacheEvidenceRecords(nextEvidence);
+        return nextEvidence;
+      });
       setEvidenceNote('');
       setCacheKey(Date.now());
       setMessage('Evidencia capturada e salva.');
@@ -2344,7 +2560,11 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
         imageUrl: manualImageUrl || buildMediaMtxUrl(mediaMtxUrl, form.streamPath, { mode: 'image', snapshotPath: form.snapshotPath, cacheKey: Date.now() })
       };
       const payload = await request('/api/monitoring/evidence', { method: 'POST', body: JSON.stringify(body) });
-      setEvidence((current) => [payload.evidence, ...current.filter((item) => item.id !== payload.evidence?.id)]);
+      setEvidence((current) => {
+        const nextEvidence = [payload.evidence, ...current.filter((item) => item.id !== payload.evidence?.id)].filter(Boolean);
+        cacheEvidenceRecords(nextEvidence);
+        return nextEvidence;
+      });
       setEvidenceNote('');
       setManualImageUrl('');
       setMessage('Registro de evidencia salvo.');
@@ -2360,7 +2580,11 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
     if (!confirmed) return;
     try {
       await request(`/api/monitoring/evidence/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      setEvidence((current) => current.filter((item) => item.id !== id));
+      setEvidence((current) => {
+        const nextEvidence = current.filter((item) => item.id !== id);
+        cacheEvidenceRecords(nextEvidence);
+        return nextEvidence;
+      });
     } catch (error) {
       setMessage(`Falha ao remover evidencia: ${error.message}`);
     }
@@ -2373,7 +2597,7 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
       <div className="monitoring-title-row">
         <div>
           <h3>Monitoramento e evidencias</h3>
-          <p className="muted">MediaMTX: {mediaMtxUrl}</p>
+          <p className="muted">Cameras em tempo real e registros de evidencia por veiculo.</p>
         </div>
         <Badge tone={configuredCount ? 'good' : 'warn'}><Camera size={14} /> {configuredCount} camera(s)</Badge>
       </div>
@@ -2405,12 +2629,12 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
           </label>
 
           <label>
-            <small>Caminho de streaming</small>
+            <small>Identificador do streaming</small>
             <input value={form.streamPath} onChange={(event) => updateForm('streamPath', event.target.value)} placeholder="cliente/veiculo/cam1" />
           </label>
 
           <label>
-            <small>Caminho snapshot/imagem</small>
+            <small>Snapshot / imagem</small>
             <input value={form.snapshotPath} onChange={(event) => updateForm('snapshotPath', event.target.value)} placeholder="cliente/veiculo/cam1/snapshot.jpg" />
           </label>
 
@@ -2443,7 +2667,7 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
           <div className="assistant-header">
             <div>
               <h3>Imagem em tempo real</h3>
-              <p className="muted">{form.streamPath || form.snapshotPath || 'sem caminho'}</p>
+              <p className="muted">{selectedItem?.device ? getVehicleName(selectedItem.device) : 'Selecione um veiculo'}</p>
             </div>
             <button className="ghost-btn" type="button" onClick={() => setCacheKey(Date.now())}>
               <RefreshCw size={16} /> Atualizar
@@ -2523,12 +2747,9 @@ function MonitoringPage({ items, config, cameras, setCameras }) {
 function IntegrationsPage({ config }) {
   const integrations = normalizeArray(config?.integrations || config?.customIntegrations || config?.customerIntegrations);
   const ideas = ['WhatsApp', 'ERP', 'Financeiro', 'CRM', 'Webhooks', 'Aplicativo WebView', 'Alertas personalizados', 'API de terceiros'];
-  const notifications = config?.notifications || {};
   const mobile = config?.mobile || {};
   const [installPrompt, setInstallPrompt] = useState(null);
   const [installMessage, setInstallMessage] = useState('');
-  const [pushoverMessage, setPushoverMessage] = useState('');
-  const [pushoverBusy, setPushoverBusy] = useState(false);
 
   useEffect(() => {
     const handlePrompt = (event) => {
@@ -2551,19 +2772,6 @@ function IntegrationsPage({ config }) {
     setInstallMessage(result?.outcome === 'accepted' ? 'App instalado ou instalacao iniciada.' : 'Instalacao cancelada.');
   };
 
-  const testPushover = async () => {
-    setPushoverBusy(true);
-    setPushoverMessage('');
-    try {
-      await request('/api/mobile/pushover/test', { method: 'POST', body: JSON.stringify({}) });
-      setPushoverMessage('Notificacao Pushover enviada com sucesso.');
-    } catch (error) {
-      setPushoverMessage(error.message || 'Falha ao enviar teste Pushover.');
-    } finally {
-      setPushoverBusy(false);
-    }
-  };
-
   return (
     <section className="panel integrations-panel">
       <div className="integration-title-row">
@@ -2584,30 +2792,6 @@ function IntegrationsPage({ config }) {
             </button>
           </div>
           <small className="muted">{installMessage || (mobile.serviceWorker ? 'Service worker ativo para instalacao e cache basico.' : 'Service worker pendente.')}</small>
-        </div>
-
-        <div className="integration-item mobile-app-card">
-          <b>Notificacoes Pushover</b>
-          <small>Status: {notifications.pushover?.enabled ? 'Configurado' : 'Aguardando token/user key na Railway'}.</small>
-          <div className="integration-status-row">
-            <Badge tone={notifications.pushover?.enabled ? 'good' : 'warn'}>{notifications.pushover?.enabled ? 'Pushover OK' : 'Configurar'}</Badge>
-            <Badge tone={notifications.pushover?.webhookReady ? 'good' : 'warn'}>{notifications.pushover?.webhookReady ? 'Webhook OK' : 'Webhook pendente'}</Badge>
-          </div>
-          <div className="actions">
-            <button className="ghost-btn" type="button" onClick={testPushover} disabled={pushoverBusy || !notifications.pushover?.enabled}>
-              <Send size={16} /> {pushoverBusy ? 'Enviando...' : 'Testar Pushover'}
-            </button>
-          </div>
-          {pushoverMessage && <small className="muted">{pushoverMessage}</small>}
-        </div>
-
-        <div className="integration-item mobile-app-card">
-          <b>Firebase/FCM</b>
-          <small>Preparado para receber a configuracao Web/Firebase sem salvar segredo no repositorio.</small>
-          <div className="integration-status-row">
-            <Badge tone={notifications.firebase?.webConfigConfigured ? 'good' : 'warn'}>Config Web</Badge>
-            <Badge tone={notifications.firebase?.vapidKeyConfigured ? 'good' : 'warn'}>VAPID</Badge>
-          </div>
         </div>
       </div>
 
@@ -2639,19 +2823,16 @@ function ConfigPage({ config, health, refreshHealth, authUser, onLogout }) {
   return (
     <section className="panel">
       <h3>Configuração e segurança</h3>
-      <div className="success-box">Frontend revisado com proxy seguro, rate limit, CSP, timeout, cache control e credenciais fora do React.</div>
-      <div className="kv"><span>Servidor Traccar</span><b>{config?.traccarUrl || '-'}</b></div>
-      <div className="kv"><span>Servidor MediaMTX</span><b>{config?.mediaMtxUrl || config?.monitoring?.mediaMtxUrl || '-'}</b></div>
+      <div className="success-box">Painel revisado com sessao protegida, limite de uso, cache controlado e credenciais fora do navegador.</div>
+      <div className="kv"><span>Status do sistema</span><b>{health?.ok ? 'Operacional' : 'Verificando'}</b></div>
       <div className="kv"><span>Cameras cadastradas</span><b>{config?.monitoring?.camerasConfigured ?? '-'}</b></div>
       <div className="kv"><span>Evidencias salvas</span><b>{config?.monitoring?.evidenceCount ?? '-'}</b></div>
-      <div className="kv"><span>Modo de autenticação</span><b>{config?.authMode || 'traccar-user-session'}</b></div>
       <div className="kv"><span>Usuário logado</span><b>{authUser?.name || authUser?.email || '-'}</b></div>
       <div className="kv"><span>Perfil admin</span><b>{yesNo(authUser?.administrator)}</b></div>
       <div className="kv"><span>Polling</span><b>{config?.pollingMs || DEFAULT_POLLING_MS} ms</b></div>
       <div className="kv"><span>Autenticado</span><b>{yesNo(config?.authenticated || health?.authenticated)}</b></div>
-      <div className="kv"><span>Health</span><b>{health?.ok ? 'OK' : '-'}</b></div>
       <div className="actions" style={{ marginTop: 14 }}>
-        <button className="ghost-btn" onClick={refreshHealth}><ShieldCheck size={17} /> Testar health</button>
+        <button className="ghost-btn" onClick={refreshHealth}><ShieldCheck size={17} /> Verificar sistema</button>
         <button className="danger-btn" onClick={onLogout}><LogOut size={17} /> Sair</button>
       </div>
     </section>
@@ -2914,10 +3095,18 @@ function App() {
   const loadMonitoringCameras = useCallback(async () => {
     try {
       const payload = await request('/api/monitoring/cameras');
-      setMonitoringCameras(normalizeArray(payload.cameras));
+      const nextCameras = normalizeArray(payload.cameras);
+      if (nextCameras.length) cacheMonitoringCameras(nextCameras);
+      setMonitoringCameras(nextCameras.length ? nextCameras : loadCachedMonitoringCameras());
     } catch {
-      setMonitoringCameras([]);
+      setMonitoringCameras(loadCachedMonitoringCameras());
     }
+  }, []);
+
+  const updateMonitoringCameras = useCallback((nextCameras) => {
+    const normalized = normalizeArray(nextCameras);
+    setMonitoringCameras(normalized);
+    cacheMonitoringCameras(normalized);
   }, []);
 
   const checkAuth = useCallback(async () => {
@@ -2949,7 +3138,7 @@ function App() {
     return { total, online, offline, unknown, events: events.length };
   }, [devices, events]);
 
-  const title = tabs.find(([key]) => key === activeTab)?.[1] || 'Dashboard';
+  const title = activeTab === 'usuario' ? 'Usuario' : (tabs.find(([key]) => key === activeTab)?.[1] || 'Dashboard');
   const subtitle = serverInfo?.attributes?.title || serverInfo?.attributes?.description || 'Rastreamento em tempo real via Traccar';
 
   if (auth.loading) return <AuthLoading />;
@@ -2962,13 +3151,19 @@ function App() {
         <div className="brand brand-company">
           <BrandLogo compact />
           <div className="sidebar-user-row">
-            <span className="brand-user">{auth.user?.name || auth.user?.email || 'Usuario Traccar'}</span>
+            <button className="brand-user" type="button" onClick={() => setActiveTab('usuario')} title="Perfil do usuario">
+              <UserRound size={14} />
+              <span>{auth.user?.name || auth.user?.email || 'Usuario Traccar'}</span>
+            </button>
             <button className="sidebar-logout-mini" type="button" onClick={handleLogout} title="Sair">
               <LogOut size={14} />
               <span>Sair</span>
             </button>
           </div>
         </div>
+        <button className="sidebar-edge-toggle" type="button" onClick={() => setSidebarHidden(true)} title="Ocultar menu lateral">
+          <ChevronLeft size={18} />
+        </button>
         <nav className="nav">
           {tabs.map(([key, label, Icon]) => (
             <button key={key} className={activeTab === key ? 'active' : ''} onClick={() => setActiveTab(key)}>
@@ -2977,28 +3172,16 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-status-stack">
-          <Badge tone={health?.ok ? 'good' : 'warn'}><ShieldCheck size={14} /> Proxy {health?.ok ? 'OK' : 'verificando'}</Badge>
           <Badge tone="info"><Activity size={14} /> {lastUpdate ? `Atualizado ${formatTime(lastUpdate)}` : 'Sem atualização'}</Badge>
         </div>
         <div className="sidebar-support-row"><SupportWhatsapp compact /></div>
-        <div className="sidebar-toolbox">
-          <button className="ghost-btn sidebar-control-btn" onClick={() => setSidebarHidden(true)} title="Recolher menu lateral">
-            <Layers size={17} /> Recolher
-          </button>
-          <button className="ghost-btn theme-toggle-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}>
-            <Settings size={17} /> {theme === 'dark' ? 'Modo claro' : 'Modo escuro'}
-          </button>
-          <button className="primary-btn" onClick={() => loadData({ silent: true })} disabled={refreshing}>
-            <RefreshCw size={17} /> {refreshing ? 'Atualizando...' : 'Atualizar'}
-          </button>
-        </div>
       </aside>
       )}
 
       {sidebarHidden && (
         <div className="floating-icon-rail" aria-label="Menu recolhido">
           <button className="rail-toggle" type="button" title="Mostrar menu lateral" onClick={() => setSidebarHidden(false)}>
-            ☰
+            <ChevronRight size={20} />
           </button>
           {tabs.map(([key, label, Icon]) => (
             <button
@@ -3012,9 +3195,6 @@ function App() {
               <Icon size={19} />
             </button>
           ))}
-          <button type="button" title="Atualizar" aria-label="Atualizar" onClick={() => loadData({ silent: true })} disabled={refreshing}>
-            <RefreshCw size={19} />
-          </button>
           <button type="button" title="Sair" aria-label="Sair" className="danger" onClick={handleLogout}>
             <LogOut size={19} />
           </button>
@@ -3028,12 +3208,6 @@ function App() {
             <p>{subtitle}</p>
           </div>
           <div className="actions">
-            <button className="ghost-btn sidebar-control-btn" onClick={() => setSidebarHidden((value) => !value)} title={sidebarHidden ? 'Mostrar menu lateral' : 'Esconder menu lateral'}>
-              <Layers size={17} /> {sidebarHidden ? 'Mostrar menu' : 'Esconder menu'}
-            </button>
-            <button className="ghost-btn theme-toggle-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}>
-              <Settings size={17} /> {theme === 'dark' ? 'Modo claro' : 'Modo escuro'}
-            </button>
             <SupportWhatsapp compact />
             <button className="primary-btn" onClick={() => loadData({ silent: true })} disabled={refreshing}>
               <RefreshCw size={17} /> {refreshing ? 'Atualizando...' : 'Atualizar'}
@@ -3065,17 +3239,26 @@ function App() {
             mediaMtxUrl={config?.mediaMtxUrl || config?.monitoring?.mediaMtxUrl}
           />
         )}
-        {activeTab === 'monitoramento' && <MonitoringPage items={items} config={config} cameras={monitoringCameras} setCameras={setMonitoringCameras} />}
+        {activeTab === 'monitoramento' && <MonitoringPage items={items} config={config} cameras={monitoringCameras} setCameras={updateMonitoringCameras} />}
         {activeTab === 'assistente' && <AIAssistantPage items={items} events={events} />}
         {activeTab === 'veiculos' && <VehiclesPage items={filteredItems} />}
         {activeTab === 'eventos' && <EventsPage events={events} devicesById={devicesById} />}
-        {activeTab === 'relatorios' && <ReportsPage items={items} layerKey={layerKey} />}
+        {activeTab === 'relatorios' && <ReportsPage items={items} layerKey={layerKey} cameras={monitoringCameras} config={config} />}
         {activeTab === 'comandos' && <CommandsPage items={items} />}
         {activeTab === 'atributos' && <AttributesPage items={filteredItems} />}
         {activeTab === 'integracoes' && <IntegrationsPage config={config} />}
         {activeTab === 'usuario' && <UserProfilePage authUser={auth.user} onProfileUpdated={handleProfileUpdated} />}
         {activeTab === 'config' && <ConfigPage config={config} health={health} refreshHealth={refreshHealth} authUser={auth.user} onLogout={handleLogout} />}
       </main>
+      <button
+        className="fixed-theme-toggle"
+        type="button"
+        onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+        title={theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+        aria-label={theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+      >
+        {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
+      </button>
     </div>
   );
 }

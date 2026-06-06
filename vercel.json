@@ -21,6 +21,9 @@
     "TRACCAR_URL": "https://gps2.rafacarrastreadores.com.br",
     "MEDIA_MTX_URL": "http://mtx.getautoflow.com.br",
     "POLLING_MS": "30000",
-    "ALLOW_UNSAFE_GOOGLE_TILES": "true"
+    "ALLOW_UNSAFE_GOOGLE_TILES": "true",
+    "COOKIE_SAMESITE": "lax",
+    "COOKIE_SECURE": "true",
+    "GEMINI_MODEL": "gemini-flash-latest"
   }
 }

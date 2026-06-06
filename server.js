@@ -110,6 +110,10 @@ const config = {
     vapidKey: String(process.env.FIREBASE_VAPID_KEY || localConfig.firebaseVapidKey || firebaseConfig.vapidKey || ''),
     webConfigJson: firebaseWebConfigJson()
   },
+  gemini: {
+    apiKey: String(process.env.GEMINI_API_KEY || localConfig.geminiApiKey || ''),
+    model: String(process.env.GEMINI_MODEL || localConfig.geminiModel || 'gemini-flash-latest').replace(/^models\//, '')
+  },
   traccarWebhookSecret: String(process.env.TRACCAR_WEBHOOK_SECRET || localConfig.traccarWebhookSecret || notificationsConfig.traccarWebhookSecret || '')
 };
 
@@ -305,7 +309,7 @@ async function saveSnapshotEvidence(body = {}, user = {}) {
 }
 function isAllowedEndpoint(urlPath) { return endpointAllowList.some((rx) => rx.test(urlPath)); }
 function pushoverConfigured() { return Boolean(config.pushover.token && config.pushover.user); }
-function firebaseConfigured() { return Boolean(config.firebase.vapidKey && config.firebase.webConfigJson); }
+function geminiConfigured() { return Boolean(config.gemini.apiKey); }
 function safePublicConfig(req = null) {
   return {
     pollingMs: config.pollingMs,
@@ -317,10 +321,7 @@ function safePublicConfig(req = null) {
     allowUnsafeGoogleTiles: config.allowUnsafeGoogleTiles,
     mobile: { installable: true, serviceWorker: true, appUrl: config.publicAppUrl || '' },
     monitoring: monitoringSummary(),
-    notifications: {
-      pushover: { enabled: pushoverConfigured(), deviceConfigured: Boolean(config.pushover.device), webhookReady: Boolean(config.traccarWebhookSecret) },
-      firebase: { enabled: firebaseConfigured(), vapidKeyConfigured: Boolean(config.firebase.vapidKey), webConfigConfigured: Boolean(config.firebase.webConfigJson) }
-    }
+    assistant: { aiEnabled: geminiConfigured() }
   };
 }
 function redact(value) { if (!value) return ''; const s = String(value); return s.length <= 8 ? '********' : `${s.slice(0, 4)}…${s.slice(-4)}`; }
@@ -376,7 +377,7 @@ async function loginToTraccar(login, password) {
 function buildAuthHeaders(req, extra = {}) { const session = req.rafacarSession || getSession(req); if (!session?.remoteCookie) { const error = new Error('Sessão Traccar não encontrada. Faça login novamente.'); error.status = 401; throw error; } return { Accept: 'application/json', Cookie: session.remoteCookie, ...extra }; }
 
 async function traccarFetch(req, apiPath, options = {}) {
-  if (!apiPath.startsWith('/api/')) throw new Error('Caminho interno inválido para proxy Traccar.');
+  if (!apiPath.startsWith('/api/')) throw new Error('Rota interna invalida.');
   const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs || 18000)); const url = `${config.traccarUrl}${apiPath}`;
   try {
     const response = await fetch(url, { method: options.method || 'GET', headers: buildAuthHeaders(req, options.headers), body: options.body, signal: controller.signal, redirect: 'manual' });
@@ -442,6 +443,63 @@ async function sendPushoverMessage({ title = 'RAFACAR RASTREADORES', message, pr
   return payload;
 }
 
+function sanitizeAssistantContext(body = {}) {
+  const question = clampText(body.question, 1200);
+  const vehicles = Array.isArray(body.vehicles) ? body.vehicles.slice(0, 12) : [];
+  const events = Array.isArray(body.events) ? body.events.slice(0, 20) : [];
+  return { question, vehicles, events };
+}
+
+async function askGeminiAssistant(body = {}) {
+  if (!geminiConfigured()) {
+    const error = new Error('IA nao configurada.');
+    error.status = 503;
+    throw error;
+  }
+  const context = sanitizeAssistantContext(body);
+  if (!context.question) {
+    const error = new Error('Pergunta obrigatoria.');
+    error.status = 400;
+    throw error;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const prompt = [
+      'Voce e o assistente operacional RAFACAR para rastreamento veicular.',
+      'Responda em portugues do Brasil, direto e com foco em operacao de frota.',
+      'Use somente os dados enviados no contexto. Se faltar dado, diga exatamente o que falta.',
+      'Nao revele detalhes tecnicos de servidor, proxy, tokens, cookies ou credenciais.',
+      '',
+      JSON.stringify(context, null, 2)
+    ].join('\n');
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.gemini.model)}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-goog-api-key': config.gemini.apiKey
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 900 }
+      }),
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || `IA retornou HTTP ${response.status}`);
+      error.status = response.status || 502;
+      throw error;
+    }
+    return String(payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('\n').trim() || '');
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('Tempo esgotado ao consultar IA.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 app.disable('x-powered-by'); app.set('trust proxy', 1);
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -471,10 +529,20 @@ app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { useD
 app.use(compression()); app.use(express.json({ limit: '512kb' })); app.use(express.urlencoded({ extended: false, limit: '512kb' })); app.use(morgan('combined'));
 app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false }));
 const loginLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, error: 'Muitas tentativas de login. Aguarde alguns minutos.' } });
+const assistantLimiter = rateLimit({ windowMs: 60 * 1000, limit: 24, standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, error: 'Muitas consultas de IA. Aguarde um momento.' } });
 
 app.get('/api/health', (req, res) => { const session = getSession(req); res.set('Cache-Control', 'no-store'); res.json({ ok: true, service: 'rafacar-dev2', version: '6.1.0-monitoring-mediamtx', port: config.port, traccarUrl: config.traccarUrl, mediaMtxUrl: config.mediaMtxUrl, authMode: 'traccar-user-session', authenticated: Boolean(session), sessions: sessions.size, configExists: fs.existsSync(configFile), user: session?.user ? redact(session.user.email || session.user.name) : '' }); });
 app.get('/api/config', (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, config: safePublicConfig(req) }); });
-app.get('/api/mobile/status', requireAuth, (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, mobile: safePublicConfig(req).mobile, notifications: safePublicConfig(req).notifications }); });
+app.get('/api/mobile/status', requireAuth, (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, mobile: safePublicConfig(req).mobile }); });
+app.post('/api/assistant/ask', requireAuth, assistantLimiter, async (req, res) => {
+  try {
+    const answer = await askGeminiAssistant(req.body || {});
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, answer });
+  } catch (error) {
+    res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao consultar IA.' });
+  }
+});
 app.get('/api/monitoring/cameras', requireAuth, (_req, res) => {
   const state = readMonitoringState();
   res.set('Cache-Control', 'no-store');
@@ -623,7 +691,7 @@ app.get('/api/bootstrap', requireAuth, async (req, res) => { try { res.set('Cach
 app.get('/api/snapshot', requireAuth, async (req, res) => { try { res.set('Cache-Control', 'no-store'); res.json(await buildSnapshot(req)); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao atualizar dados.' }); } });
 app.get('/api/command-types', requireAuth, async (req, res) => { try { const deviceId = Number(req.query.deviceId); const query = Number.isFinite(deviceId) && deviceId > 0 ? `?deviceId=${deviceId}` : ''; const payload = await traccarFetch(req, `/api/commands/types${query}`); res.set('Cache-Control', 'no-store'); res.json(Array.isArray(payload) ? payload : []); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao carregar comandos.' }); } });
 app.post('/api/send-command', requireAuth, async (req, res) => { try { const body = req.body || {}; const deviceId = Number(body.deviceId); const type = String(body.type || '').trim(); if (!Number.isFinite(deviceId) || deviceId <= 0) return res.status(400).json({ ok: false, error: 'deviceId inválido.' }); if (!type || type.length > 80) return res.status(400).json({ ok: false, error: 'Tipo de comando inválido.' }); const attributes = body.attributes && typeof body.attributes === 'object' && !Array.isArray(body.attributes) ? body.attributes : {}; const command = { id: 0, deviceId, type, attributes }; const payload = await traccarFetch(req, '/api/commands/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) }); res.json({ ok: true, command: payload }); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao enviar comando.', details: error.payload || null }); } });
-app.all('/api/traccar/*', requireAuth, async (req, res) => { try { if (!allowedMethods.has(req.method)) return res.status(405).json({ ok: false, error: 'Método não permitido.' }); const rawPath = `/${req.params[0] || ''}`.replace(/\/+/g, '/'); const apiPath = rawPath.startsWith('/api/') ? rawPath : `/api${rawPath}`; if (!isAllowedEndpoint(apiPath)) return res.status(403).json({ ok: false, error: 'Endpoint bloqueado pelo proxy seguro.', apiPath }); const query = new URLSearchParams(req.query).toString(); const finalPath = query ? `${apiPath}?${query}` : apiPath; const hasBody = !['GET', 'HEAD'].includes(req.method); const payload = await traccarFetch(req, finalPath, { method: req.method, headers: hasBody ? { 'Content-Type': 'application/json' } : {}, body: hasBody ? JSON.stringify(req.body || {}) : undefined }); res.set('Cache-Control', 'no-store'); res.json(payload); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao conectar ao Traccar.', details: error.payload || null }); } });
+app.all('/api/traccar/*', requireAuth, async (req, res) => { try { if (!allowedMethods.has(req.method)) return res.status(405).json({ ok: false, error: 'Método não permitido.' }); const rawPath = `/${req.params[0] || ''}`.replace(/\/+/g, '/'); const apiPath = rawPath.startsWith('/api/') ? rawPath : `/api${rawPath}`; if (!isAllowedEndpoint(apiPath)) return res.status(403).json({ ok: false, error: 'Endpoint nao autorizado.', apiPath }); const query = new URLSearchParams(req.query).toString(); const finalPath = query ? `${apiPath}?${query}` : apiPath; const hasBody = !['GET', 'HEAD'].includes(req.method); const payload = await traccarFetch(req, finalPath, { method: req.method, headers: hasBody ? { 'Content-Type': 'application/json' } : {}, body: hasBody ? JSON.stringify(req.body || {}) : undefined }); res.set('Cache-Control', 'no-store'); res.json(payload); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao conectar ao Traccar.', details: error.payload || null }); } });
 app.post('/api/webhooks/traccar/pushover', async (req, res) => {
   try {
     const providedSecret = String(req.get('x-rafacar-webhook-secret') || req.query.secret || '');
@@ -637,5 +705,5 @@ app.post('/api/webhooks/traccar/pushover', async (req, res) => {
 });
 app.use(express.static(distDir, { etag: true, maxAge: '1h', setHeaders(res, filePath) { if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-store'); } }));
 app.get('*', (_req, res) => { res.sendFile(path.join(distDir, 'index.html')); });
-app.use((error, _req, res, _next) => { console.error('[server]', error); res.status(500).json({ ok: false, error: 'Erro interno no proxy RAFACAR RASTREADORES.' }); });
-app.listen(config.port, '0.0.0.0', () => { console.log(`RAFACAR RASTREADORES rodando em 0.0.0.0:${config.port}`); console.log(`Proxy Traccar: ${config.traccarUrl}`); console.log('Auth mode: credenciais Traccar por usuário com cookie HttpOnly'); });
+app.use((error, _req, res, _next) => { console.error('[server]', error); res.status(500).json({ ok: false, error: 'Erro interno no RAFACAR RASTREADORES.' }); });
+app.listen(config.port, '0.0.0.0', () => { console.log(`RAFACAR RASTREADORES rodando em 0.0.0.0:${config.port}`); console.log('Auth mode: credenciais Traccar por usuário com cookie HttpOnly'); });

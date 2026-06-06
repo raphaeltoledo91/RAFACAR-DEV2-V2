@@ -26,6 +26,10 @@ const config = {
     vapidKey: String(process.env.FIREBASE_VAPID_KEY || ''),
     webConfigJson: String(process.env.FIREBASE_WEB_CONFIG_JSON || '')
   },
+  gemini: {
+    apiKey: String(process.env.GEMINI_API_KEY || ''),
+    model: String(process.env.GEMINI_MODEL || 'gemini-flash-latest').replace(/^models\//, '')
+  },
   traccarWebhookSecret: String(process.env.TRACCAR_WEBHOOK_SECRET || '')
 };
 
@@ -50,7 +54,7 @@ function parseCookies(req) { const header = req.headers.cookie || ''; return Obj
 function parseSetCookie(headers) { const raw = headers.get('set-cookie'); if (!raw) return ''; return raw.split(/,(?=[^;,]+=)/g).map((part) => part.split(';')[0].trim()).filter(Boolean).join('; '); }
 function mediaMtxOrigin() { try { return new URL(config.mediaMtxUrl).origin; } catch { return ''; } }
 function pushoverConfigured() { return Boolean(config.pushover.token && config.pushover.user); }
-function firebaseConfigured() { return Boolean(config.firebase.vapidKey && config.firebase.webConfigJson); }
+function geminiConfigured() { return Boolean(config.gemini.apiKey); }
 function normalizeMode(value) { return ['image', 'webrtc', 'hls'].includes(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'image'; }
 function cleanMediaPath(value) { return String(value || '').trim().replace(/^\/+/, ''); }
 function isAllowedEndpoint(urlPath) { return endpointAllowList.some((rx) => rx.test(urlPath)); }
@@ -79,10 +83,7 @@ function safePublicConfig(req = null) {
     allowUnsafeGoogleTiles: config.allowUnsafeGoogleTiles,
     mobile: { installable: true, serviceWorker: true, appUrl: config.publicAppUrl || '' },
     monitoring: { mediaMtxUrl: config.mediaMtxUrl, camerasConfigured: camerasByDevice.size, evidenceCount: evidenceRecords.length },
-    notifications: {
-      pushover: { enabled: pushoverConfigured(), deviceConfigured: Boolean(config.pushover.device), webhookReady: Boolean(config.traccarWebhookSecret) },
-      firebase: { enabled: firebaseConfigured(), vapidKeyConfigured: Boolean(config.firebase.vapidKey), webConfigConfigured: Boolean(config.firebase.webConfigJson) }
-    }
+    assistant: { aiEnabled: geminiConfigured() }
   };
 }
 
@@ -132,7 +133,7 @@ async function loginToTraccar(login, password) {
 }
 function buildAuthHeaders(req, extra = {}) { const session = req.rafacarSession || getSession(req); if (!session?.remoteCookie) { const error = new Error('Sessão Traccar não encontrada. Faça login novamente.'); error.status = 401; throw error; } return { Accept: 'application/json', Cookie: session.remoteCookie, ...extra }; }
 async function traccarFetch(req, apiPath, options = {}) {
-  if (!apiPath.startsWith('/api/')) throw new Error('Caminho interno inválido para proxy Traccar.');
+  if (!apiPath.startsWith('/api/')) throw new Error('Rota interna invalida.');
   const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs || 18000)); const url = `${config.traccarUrl}${apiPath}`;
   try {
     const response = await fetch(url, { method: options.method || 'GET', headers: buildAuthHeaders(req, options.headers), body: options.body, signal: controller.signal, redirect: 'manual' });
@@ -162,6 +163,39 @@ async function sendPushoverMessage({ title = 'RAFACAR RASTREADORES', message, pr
   return payload;
 }
 
+function sanitizeAssistantContext(body = {}) {
+  const question = clampText(body.question, 1200);
+  const vehicles = Array.isArray(body.vehicles) ? body.vehicles.slice(0, 12) : [];
+  const events = Array.isArray(body.events) ? body.events.slice(0, 20) : [];
+  return { question, vehicles, events };
+}
+async function askGeminiAssistant(body = {}) {
+  if (!geminiConfigured()) { const error = new Error('IA nao configurada.'); error.status = 503; throw error; }
+  const context = sanitizeAssistantContext(body);
+  if (!context.question) { const error = new Error('Pergunta obrigatoria.'); error.status = 400; throw error; }
+  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const prompt = [
+      'Voce e o assistente operacional RAFACAR para rastreamento veicular.',
+      'Responda em portugues do Brasil, direto e com foco em operacao de frota.',
+      'Use somente os dados enviados no contexto. Se faltar dado, diga exatamente o que falta.',
+      'Nao revele detalhes tecnicos de servidor, proxy, tokens, cookies ou credenciais.',
+      '',
+      JSON.stringify(context, null, 2)
+    ].join('\n');
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.gemini.model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-goog-api-key': config.gemini.apiKey },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 900 } }),
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = new Error(payload?.error?.message || `IA retornou HTTP ${response.status}`); error.status = response.status || 502; throw error; }
+    return String(payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('\n').trim() || '');
+  } catch (error) { if (error.name === 'AbortError') throw new Error('Tempo esgotado ao consultar IA.'); throw error; }
+  finally { clearTimeout(timeout); }
+}
+
 app.disable('x-powered-by'); app.set('trust proxy', 1);
 app.use((req, res, next) => { const origin = req.headers.origin; if (isCorsAllowed(origin)) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-rafacar-webhook-secret'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS'); res.setHeader('Vary', 'Origin'); } if (req.method === 'OPTIONS') return res.sendStatus(204); return next(); });
 const connectSrc = ["'self'", 'https://*.tile.openstreetmap.org', 'https://*.basemaps.cartocdn.com', 'https://server.arcgisonline.com'];
@@ -173,10 +207,12 @@ app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { useD
 app.use(compression()); app.use(express.json({ limit: '512kb' })); app.use(express.urlencoded({ extended: false, limit: '512kb' })); app.use(morgan('combined'));
 app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false }));
 const loginLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, error: 'Muitas tentativas de login. Aguarde alguns minutos.' } });
+const assistantLimiter = rateLimit({ windowMs: 60 * 1000, limit: 24, standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, error: 'Muitas consultas de IA. Aguarde um momento.' } });
 
 app.get('/api/health', (req, res) => { const session = getSession(req); res.set('Cache-Control', 'no-store'); res.json({ ok: true, service: 'rafacar-dev2', version: 'vercel-serverless', traccarUrl: config.traccarUrl, mediaMtxUrl: config.mediaMtxUrl, authMode: 'traccar-user-session', authenticated: Boolean(session), sessions: sessions.size, configExists: true, user: session?.user ? redact(session.user.email || session.user.name) : '' }); });
 app.get('/api/config', (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, config: safePublicConfig(req) }); });
-app.get('/api/mobile/status', requireAuth, (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, mobile: safePublicConfig(req).mobile, notifications: safePublicConfig(req).notifications }); });
+app.get('/api/mobile/status', requireAuth, (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, mobile: safePublicConfig(req).mobile }); });
+app.post('/api/assistant/ask', requireAuth, assistantLimiter, async (req, res) => { try { const answer = await askGeminiAssistant(req.body || {}); res.set('Cache-Control', 'no-store'); res.json({ ok: true, answer }); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao consultar IA.' }); } });
 app.get('/api/monitoring/cameras', requireAuth, (_req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, mediaMtxUrl: config.mediaMtxUrl, cameras: Array.from(camerasByDevice.values()).map(publicCamera).filter((camera) => Number.isFinite(camera.deviceId) && camera.deviceId > 0) }); });
 app.post('/api/monitoring/cameras', requireAuth, (req, res) => { try { const deviceId = Number(req.body?.deviceId); const existing = camerasByDevice.get(deviceId) || {}; const camera = cameraFromBody(req.body || {}, existing); camerasByDevice.set(camera.deviceId, camera); res.set('Cache-Control', 'no-store'); res.json({ ok: true, camera: publicCamera(camera), cameras: Array.from(camerasByDevice.values()).sort((a, b) => Number(a.deviceId) - Number(b.deviceId)).map(publicCamera) }); } catch (error) { res.status(error.status || 500).json({ ok: false, error: error.message || 'Falha ao salvar camera.' }); } });
 app.delete('/api/monitoring/cameras/:deviceId', requireAuth, (req, res) => { camerasByDevice.delete(Number(req.params.deviceId)); res.set('Cache-Control', 'no-store'); res.json({ ok: true, cameras: Array.from(camerasByDevice.values()).map(publicCamera) }); });
@@ -195,9 +231,9 @@ app.get('/api/bootstrap', requireAuth, async (req, res) => { try { res.set('Cach
 app.get('/api/snapshot', requireAuth, async (req, res) => { try { res.set('Cache-Control', 'no-store'); res.json(await buildSnapshot(req)); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao atualizar dados.' }); } });
 app.get('/api/command-types', requireAuth, async (req, res) => { try { const deviceId = Number(req.query.deviceId); const query = Number.isFinite(deviceId) && deviceId > 0 ? `?deviceId=${deviceId}` : ''; const payload = await traccarFetch(req, `/api/commands/types${query}`); res.set('Cache-Control', 'no-store'); res.json(Array.isArray(payload) ? payload : []); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao carregar comandos.' }); } });
 app.post('/api/send-command', requireAuth, async (req, res) => { try { const body = req.body || {}; const deviceId = Number(body.deviceId); const type = String(body.type || '').trim(); if (!Number.isFinite(deviceId) || deviceId <= 0) return res.status(400).json({ ok: false, error: 'deviceId inválido.' }); if (!type || type.length > 80) return res.status(400).json({ ok: false, error: 'Tipo de comando inválido.' }); const attributes = body.attributes && typeof body.attributes === 'object' && !Array.isArray(body.attributes) ? body.attributes : {}; const command = { id: 0, deviceId, type, attributes }; const payload = await traccarFetch(req, '/api/commands/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) }); res.json({ ok: true, command: payload }); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao enviar comando.', details: error.payload || null }); } });
-app.all('/api/traccar/*', requireAuth, async (req, res) => { try { if (!allowedMethods.has(req.method)) return res.status(405).json({ ok: false, error: 'Método não permitido.' }); const rawPath = `/${req.params[0] || ''}`.replace(/\/+/, '/'); const apiPath = rawPath.startsWith('/api/') ? rawPath : `/api${rawPath}`; if (!isAllowedEndpoint(apiPath)) return res.status(403).json({ ok: false, error: 'Endpoint bloqueado pelo proxy seguro.', apiPath }); const query = new URLSearchParams(req.query).toString(); const finalPath = query ? `${apiPath}?${query}` : apiPath; const hasBody = !['GET', 'HEAD'].includes(req.method); const payload = await traccarFetch(req, finalPath, { method: req.method, headers: hasBody ? { 'Content-Type': 'application/json' } : {}, body: hasBody ? JSON.stringify(req.body || {}) : undefined }); res.set('Cache-Control', 'no-store'); res.json(payload); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao conectar ao Traccar.', details: error.payload || null }); } });
+app.all('/api/traccar/*', requireAuth, async (req, res) => { try { if (!allowedMethods.has(req.method)) return res.status(405).json({ ok: false, error: 'Método não permitido.' }); const rawPath = `/${req.params[0] || ''}`.replace(/\/+/, '/'); const apiPath = rawPath.startsWith('/api/') ? rawPath : `/api${rawPath}`; if (!isAllowedEndpoint(apiPath)) return res.status(403).json({ ok: false, error: 'Endpoint nao autorizado.', apiPath }); const query = new URLSearchParams(req.query).toString(); const finalPath = query ? `${apiPath}?${query}` : apiPath; const hasBody = !['GET', 'HEAD'].includes(req.method); const payload = await traccarFetch(req, finalPath, { method: req.method, headers: hasBody ? { 'Content-Type': 'application/json' } : {}, body: hasBody ? JSON.stringify(req.body || {}) : undefined }); res.set('Cache-Control', 'no-store'); res.json(payload); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao conectar ao Traccar.', details: error.payload || null }); } });
 app.post('/api/webhooks/traccar/pushover', async (req, res) => { try { const providedSecret = String(req.get('x-rafacar-webhook-secret') || req.query.secret || ''); if (config.traccarWebhookSecret && providedSecret !== config.traccarWebhookSecret) return res.status(401).json({ ok: false, error: 'Webhook nao autorizado.' }); if (!config.traccarWebhookSecret) return res.status(503).json({ ok: false, error: 'Defina TRACCAR_WEBHOOK_SECRET antes de ativar o webhook.' }); const payload = await sendPushoverMessage({ title: 'Alerta RAFACAR', message: formatWebhookMessage(req.body || {}) }); res.json({ ok: true, result: { status: payload?.status || 1, request: payload?.request || null } }); } catch (error) { res.status(error.status || 502).json({ ok: false, error: error.message || 'Falha ao processar webhook Pushover.', details: error.payload || null }); } });
 app.use('/api', (_req, res) => res.status(404).json({ ok: false, error: 'Endpoint RAFACAR não encontrado.' }));
-app.use((error, _req, res, _next) => { console.error('[vercel-api]', error); res.status(500).json({ ok: false, error: 'Erro interno no proxy RAFACAR RASTREADORES.' }); });
+app.use((error, _req, res, _next) => { console.error('[vercel-api]', error); res.status(500).json({ ok: false, error: 'Erro interno no RAFACAR RASTREADORES.' }); });
 
 export default app;
