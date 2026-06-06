@@ -3374,7 +3374,7 @@ textarea:focus {
 }
 
 .map-app-shell .sidebar {
-  position: relative;
+  position: fixed;
   background: rgba(226, 243, 249, .78);
 }
 
@@ -3594,3 +3594,83 @@ textarea:focus {
 }
 
 /* RAFACAR V2.1 LAYOUT AND USER-SAFE UI PATCH END */
+
+/* RAFACAR FINAL MAP/SIDEBAR STABILITY PATCH START */
+
+.map-app-shell,
+.map-app-shell .main,
+.map-app-shell.sidebar-hidden .main,
+.dashboard-screen,
+.map-dashboard-layout,
+.map-stage-panel,
+.full-background-map,
+.map-stage-panel .map-wrap,
+.map-stage-panel .leaflet-container {
+  width: 100%;
+  height: 100dvh !important;
+  min-height: 100dvh !important;
+}
+
+.map-app-shell .main,
+.map-app-shell.sidebar-hidden .main {
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+.map-app-shell .sidebar {
+  position: fixed !important;
+  z-index: 1300 !important;
+  left: max(14px, env(safe-area-inset-left)) !important;
+  top: max(14px, env(safe-area-inset-top)) !important;
+  bottom: max(14px, env(safe-area-inset-bottom)) !important;
+}
+
+.map-app-shell.sidebar-hidden .sidebar {
+  display: none !important;
+}
+
+.map-app-shell .floating-icon-rail {
+  position: fixed !important;
+  z-index: 1450 !important;
+}
+
+.map-app-shell .map-toolbar {
+  z-index: 820 !important;
+}
+
+.map-app-shell .fleet-overlay-panel {
+  z-index: 780 !important;
+}
+
+.map-app-shell .camera-map-dock {
+  z-index: 810 !important;
+}
+
+@media (max-width: 760px) {
+  .map-app-shell,
+  .map-app-shell .main,
+  .map-app-shell.sidebar-hidden .main,
+  .dashboard-screen,
+  .map-dashboard-layout,
+  .map-stage-panel,
+  .full-background-map,
+  .map-stage-panel .map-wrap,
+  .map-stage-panel .leaflet-container {
+    height: 100dvh !important;
+    min-height: 100dvh !important;
+  }
+
+  .map-app-shell .sidebar {
+    right: max(14px, env(safe-area-inset-right)) !important;
+    width: auto !important;
+    max-width: calc(100vw - 28px);
+  }
+
+  .map-app-shell .floating-icon-rail {
+    left: max(10px, env(safe-area-inset-left)) !important;
+    right: max(10px, env(safe-area-inset-right)) !important;
+    bottom: max(10px, env(safe-area-inset-bottom)) !important;
+  }
+}
+
+/* RAFACAR FINAL MAP/SIDEBAR STABILITY PATCH END */

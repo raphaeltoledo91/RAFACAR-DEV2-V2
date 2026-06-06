@@ -1097,6 +1097,22 @@ function MapAutoFit({ positions, enabled = true, singleZoom = 18, maxZoom = 18, 
   return null;
 }
 
+function MapResizeGuard({ watchKey = '' }) {
+  const map = useMap();
+  useEffect(() => {
+    const invalidate = () => map.invalidateSize({ animate: false });
+    const timers = [0, 120, 360, 760].map((delay) => window.setTimeout(invalidate, delay));
+    window.addEventListener('resize', invalidate);
+    window.addEventListener('orientationchange', invalidate);
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.removeEventListener('resize', invalidate);
+      window.removeEventListener('orientationchange', invalidate);
+    };
+  }, [map, watchKey]);
+  return null;
+}
+
 function useMapZoom() {
   const map = useMap();
   const [zoom, setZoom] = useState(() => map.getZoom());
@@ -1341,8 +1357,9 @@ function Dashboard({ items, stats, layerKey, setLayerKey, fitMap, setFitMap, sea
 
           <div className="map-wrap full-background-map">
             <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_MAP_ZOOM} scrollWheelZoom>
+              <MapResizeGuard watchKey={`${fleetPanelHidden}-${items.length}-${layerKey}`} />
               <TileLayer attribution={layer.attribution} url={layer.url} maxZoom={20} />
-              <MapAutoFit positions={validPositions} enabled={fitMap && validPositions.length > 1} singleZoom={FLEET_MAX_ZOOM} maxZoom={FLEET_MAX_ZOOM} padding={[72, 72]} requestKey={fitRequestId} />
+              <MapAutoFit positions={validPositions} enabled={fitMap} singleZoom={FLEET_MAX_ZOOM} maxZoom={FLEET_MAX_ZOOM} padding={[72, 72]} requestKey={fitRequestId} />
               <MapFocusTarget item={focusedItem} zoom={SELECTED_VEHICLE_ZOOM} />
               {items.map((item) => <VehicleMarker key={item.device.id} item={item} onFocus={focusVehicle} focused={Number(item.device.id) === Number(focusedVehicleId)} />)}
             </MapContainer>
@@ -2116,6 +2133,7 @@ function ReportsPage({ items, layerKey, cameras = [], config }) {
       <div className="reports-grid">
         <div className="report-map-wrap">
           <MapContainer center={routePoints[0] || DEFAULT_CENTER} zoom={routePoints.length ? 17 : DEFAULT_MAP_ZOOM} scrollWheelZoom>
+            <MapResizeGuard watchKey={`${routePoints.length}-${reportType}`} />
             <TileLayer attribution={layer.attribution} url={layer.url} maxZoom={20} />
             <MapAutoFit positions={validRouteRows} enabled={Boolean(routePoints.length)} singleZoom={18} maxZoom={18} padding={[54, 54]} />
             {routePoints.length > 1 && <Polyline positions={routePoints} weight={6} opacity={0.84} className="report-route-line" />}
