@@ -73,16 +73,19 @@ function recentIso(hoursBack = 24) { return new Date(Date.now() - hoursBack * 60
 function nowIso() { return new Date().toISOString(); }
 
 function safePublicConfig(req = null) {
+  const authenticated = Boolean(req ? getSession(req) : false);
   return {
     pollingMs: config.pollingMs,
-    traccarUrl: config.traccarUrl,
-    mediaMtxUrl: config.mediaMtxUrl,
-    authMode: 'traccar-user-session',
-    authenticated: Boolean(req ? getSession(req) : false),
+    ...(authenticated ? { mediaMtxUrl: config.mediaMtxUrl } : {}),
+    authenticated,
     configExists: true,
     allowUnsafeGoogleTiles: config.allowUnsafeGoogleTiles,
     mobile: { installable: true, serviceWorker: true, appUrl: config.publicAppUrl || '' },
-    monitoring: { mediaMtxUrl: config.mediaMtxUrl, camerasConfigured: camerasByDevice.size, evidenceCount: evidenceRecords.length },
+    monitoring: {
+      ...(authenticated ? { mediaMtxUrl: config.mediaMtxUrl } : {}),
+      camerasConfigured: camerasByDevice.size,
+      evidenceCount: evidenceRecords.length
+    },
     assistant: { aiEnabled: geminiConfigured() }
   };
 }

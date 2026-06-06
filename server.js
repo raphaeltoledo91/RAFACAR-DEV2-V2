@@ -149,9 +149,13 @@ function writeMonitoringState(nextState) {
   };
   fs.writeFileSync(monitoringConfigFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
 }
-function monitoringSummary() {
+function monitoringSummary({ includeMediaUrl = false } = {}) {
   const state = readMonitoringState();
-  return { mediaMtxUrl: config.mediaMtxUrl, camerasConfigured: state.cameras.length, evidenceCount: state.evidence.length };
+  return {
+    ...(includeMediaUrl ? { mediaMtxUrl: config.mediaMtxUrl } : {}),
+    camerasConfigured: state.cameras.length,
+    evidenceCount: state.evidence.length
+  };
 }
 function normalizeMode(value) {
   return ['image', 'webrtc', 'hls'].includes(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'image';
@@ -311,16 +315,15 @@ function isAllowedEndpoint(urlPath) { return endpointAllowList.some((rx) => rx.t
 function pushoverConfigured() { return Boolean(config.pushover.token && config.pushover.user); }
 function geminiConfigured() { return Boolean(config.gemini.apiKey); }
 function safePublicConfig(req = null) {
+  const authenticated = Boolean(req ? getSession(req) : false);
   return {
     pollingMs: config.pollingMs,
-    traccarUrl: config.traccarUrl,
-    mediaMtxUrl: config.mediaMtxUrl,
-    authMode: 'traccar-user-session',
-    authenticated: Boolean(req ? getSession(req) : false),
+    ...(authenticated ? { mediaMtxUrl: config.mediaMtxUrl } : {}),
+    authenticated,
     configExists: fs.existsSync(configFile),
     allowUnsafeGoogleTiles: config.allowUnsafeGoogleTiles,
     mobile: { installable: true, serviceWorker: true, appUrl: config.publicAppUrl || '' },
-    monitoring: monitoringSummary(),
+    monitoring: monitoringSummary({ includeMediaUrl: authenticated }),
     assistant: { aiEnabled: geminiConfigured() }
   };
 }
