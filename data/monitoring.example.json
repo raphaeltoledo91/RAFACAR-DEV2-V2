@@ -1,0 +1,15 @@
+{
+  "mediaMtxUrl": "http://mtx.getautoflow.com.br",
+  "cameras": [
+    {
+      "deviceId": 1,
+      "label": "Camera principal",
+      "streamPath": "veiculo-1/camera-1",
+      "snapshotPath": "veiculo-1/camera-1/snapshot.jpg",
+      "mode": "image",
+      "enabled": true,
+      "autoOpen": true
+    }
+  ],
+  "evidence": []
+}

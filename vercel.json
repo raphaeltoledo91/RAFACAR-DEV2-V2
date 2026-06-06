@@ -1,0 +1,28 @@
+{
+  "buildCommand": "npm install && npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/server.js"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "env": {
+    "VITE_TRACCAR_URL": "@vite_traccar_url",
+    "VITE_AUTH_MODE": "@vite_auth_mode",
+    "VITE_USER": "@vite_user",
+    "VITE_PASSWORD": "@vite_password",
+    "VITE_POLLING_MS": "@vite_polling_ms"
+  },
+  "functions": {
+    "server.js": {
+      "runtime": "nodejs20.x",
+      "memory": 512,
+      "maxDuration": 60
+    }
+  }
+}

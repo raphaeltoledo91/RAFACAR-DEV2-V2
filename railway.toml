@@ -1,0 +1,20 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = "npm ci && npm run build"
+watchPatterns = [
+  "server.js",
+  "package.json",
+  "package-lock.json",
+  "vite.config.js",
+  "railway.toml",
+  "src/**",
+  "public/**",
+  "data/**"
+]
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

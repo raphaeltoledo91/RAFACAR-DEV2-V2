@@ -1,0 +1,25 @@
+node_modules/
+dist/
+logs/
+data/config.local.json
+data/notifications.local.json
+data/monitoring.local.json
+data/evidence-media/
+.env
+npm-debug.log*
+dist-pages/
+
+# Mobile/Capacitor local output
+mobile/capacitor/node_modules/
+mobile/capacitor/android/
+mobile/capacitor/ios/
+mobile/capacitor/google-services.json
+
+# Arquivos locais gerados por correções/testes
+backups/
+*.bak
+*.bak-*
+corrigir-*.sh
+modernizar-*.sh
+configurar-traccar-*.sh
+adicionar-login-traccar-*.sh

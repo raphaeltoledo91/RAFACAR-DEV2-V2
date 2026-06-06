@@ -1,0 +1,16 @@
+{
+  "traccarUrl": "https://gps2.rafacarrastreadores.com.br",
+  "mediaMtxUrl": "http://mtx.getautoflow.com.br",
+  "port": 3000,
+  "pollingMs": 30000,
+  "authMode": "token-session-cookie",
+  "user": "",
+  "password": "",
+  "token": "",
+  "tokenHeader": "Authorization",
+  "tokenPrefix": "Bearer ",
+  "allowUnsafeGoogleTiles": true,
+  "corsOrigins": ["https://raphaeltoledo91.github.io"],
+  "cookieSameSite": "none",
+  "cookieSecure": true
+}
