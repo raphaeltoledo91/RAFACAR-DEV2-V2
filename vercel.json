@@ -1,10 +1,16 @@
 {
-  "buildCommand": "npm install && npm run build",
+  "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/index.js": {
+      "memory": 512,
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "/server.js"
+      "destination": "/api/index.js"
     },
     {
       "source": "/(.*)",
@@ -12,17 +18,9 @@
     }
   ],
   "env": {
-    "VITE_TRACCAR_URL": "@vite_traccar_url",
-    "VITE_AUTH_MODE": "@vite_auth_mode",
-    "VITE_USER": "@vite_user",
-    "VITE_PASSWORD": "@vite_password",
-    "VITE_POLLING_MS": "@vite_polling_ms"
-  },
-  "functions": {
-    "server.js": {
-      "runtime": "nodejs20.x",
-      "memory": 512,
-      "maxDuration": 60
-    }
+    "TRACCAR_URL": "https://gps2.rafacarrastreadores.com.br",
+    "MEDIA_MTX_URL": "http://mtx.getautoflow.com.br",
+    "POLLING_MS": "30000",
+    "ALLOW_UNSAFE_GOOGLE_TILES": "true"
   }
 }
