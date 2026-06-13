@@ -45,6 +45,7 @@ import {
 } from 'lucide-react';
 import { MapContainer, Marker, Popup, Polyline, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
+import { Analytics } from '@vercel/analytics/react';
 import './styles.css';
 
 const API_TIMEOUT_MS = 18000;
@@ -3285,6 +3286,7 @@ createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>
       <App />
+      <Analytics />
     </ErrorBoundary>
   </React.StrictMode>
 );
